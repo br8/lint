@@ -14,17 +14,16 @@ import (
 	"strings"
 	"sync"
 
-	_ "net/http/pprof"
-
 	"github.com/golang/lint"
 	"github.com/pawanrawal/dlint/patch"
 )
 
 var (
+	port        = flag.String("port", ":4567", "Port to run the web server on.")
 	accessToken = flag.String("token", "", "Access token for the Github API")
-	basePath    = flag.String("repo", "https://api.github.com/repos/pawanrawal/ideal-octo-fortnight", "basePath for repo")
+	basePath    = flag.String("repo", "", "basePath for repo")
 	ignoreFile  = flag.String("ignore", "", "Name of file which contains information about files/folders which should be ignored")
-	debugMode   = flag.Bool("debug", true, "In debug mode comments are not published to Github")
+	debugMode   = flag.Bool("debug", false, "In debug mode comments are not published to Github")
 )
 
 func url(path string) string {
@@ -103,10 +102,6 @@ func publishComments(prNum int, pc chan LintError) {
 			log.Fatal(err)
 		}
 		defer resp.Body.Close()
-		// fmt.Println("response Status:", resp.Status)
-		// fmt.Println("response Headers:", resp.Header)
-		// body, _ := ioutil.ReadAll(resp.Body)
-		// fmt.Println("response Body:", string(body))
 	}
 }
 
@@ -222,7 +217,7 @@ func parseFilesToIgnore() {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		l := scanner.Text()
-		if l == "" {
+		if l == "" || strings.HasPrefix(l, "//") {
 			continue
 		}
 		ig := ignore{name: l}
@@ -242,11 +237,14 @@ func parseFilesToIgnore() {
 
 func main() {
 	flag.Parse()
+	if *basePath == "" {
+		log.Fatal("Please enter a valid base path for a Github repo.")
+	}
 	parseFilesToIgnore()
 	http.HandleFunc("/payload", payloadHandler)
-	err := http.ListenAndServe(":4567", nil)
+	fmt.Println("HTTP server listening on port 4567")
+	err := http.ListenAndServe(*port, nil)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}
-	fmt.Println("HTTP server listening on port 4567")
 }

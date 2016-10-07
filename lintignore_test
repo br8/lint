@@ -1,3 +1,4 @@
+// Ignore files in vendor folder.
 vendor/
 ignore.go
 folder/subfolder/
