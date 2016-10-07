@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -8,6 +9,9 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/golang/lint"
 	"github.com/pawanrawal/dlint/patch"
@@ -16,6 +20,7 @@ import (
 var (
 	accessToken = flag.String("token", "", "Access token for the Github API")
 	basePath    = flag.String("repo", "https://api.github.com/repos/pawanrawal/ideal-octo-fortnight", "basePath for repo")
+	ignoreFile  = flag.String("ignore", "", "Name of file which contains information about files/folders which should be ignored")
 	debugMode   = flag.Bool("debug", true, "In debug mode comments are not published to Github")
 )
 
@@ -98,8 +103,19 @@ func publishComments(prNum int, le []LintError) {
 	}
 }
 
-// TODO - Implement.
-func validateName(fileName string) bool {
+func lintFile(fileName string) bool {
+	if ext := filepath.Ext(fileName); ext != ".go" {
+		return false
+	}
+	for _, ig := range ignored {
+		if ig.itype == FILE && ig.name == fileName {
+			return false
+		} else if ig.itype == EXT && strings.HasSuffix(fileName, ig.name) {
+			return false
+		} else if ig.itype == DIR && strings.HasPrefix(fileName, ig.name) {
+			return false
+		}
+	}
 	return true
 }
 
@@ -132,7 +148,7 @@ func payloadHandler(w http.ResponseWriter, r *http.Request) {
 	var le []LintError
 	l := lint.Linter{}
 	for _, file := range fi {
-		if !validateName(file.Name) {
+		if !lintFile(file.Name) {
 			continue
 		}
 
@@ -165,8 +181,51 @@ func payloadHandler(w http.ResponseWriter, r *http.Request) {
 	publishComments(d.Number, le)
 }
 
+const (
+	FILE = iota
+	DIR
+	EXT
+)
+
+type ignore struct {
+	name  string
+	itype int
+}
+
+var ignored []ignore
+
+func parseFilesToIgnore() {
+	if *ignoreFile == "" {
+		return
+	}
+	f, err := os.Open(*ignoreFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		l := scanner.Text()
+		if l == "" {
+			continue
+		}
+		ig := ignore{name: l}
+		ext := filepath.Ext(l)
+		if l[0] == '*' && len(l) > 1 {
+			ig.name = l[1:]
+			ig.itype = EXT
+		} else if ext != ".go" {
+			ig.itype = DIR
+		}
+		ignored = append(ignored, ig)
+	}
+	if err := scanner.Err(); err != nil {
+		log.Fatal(err)
+	}
+}
+
 func main() {
 	flag.Parse()
+	parseFilesToIgnore()
 	http.HandleFunc("/payload", payloadHandler)
 	err := http.ListenAndServe(":4567", nil)
 	if err != nil {

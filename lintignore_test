@@ -1,0 +1,6 @@
+vendor/
+ignore.go
+folder/subfolder/
+*.pb.go
+
+folder/ignore.go

@@ -1,0 +1,4 @@
+vendor
+ignore.go
+folder/subfolder
+folder/ignore.go
