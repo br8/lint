@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dgraph-io/lint/patch"
 	"github.com/golang/lint"
-	"github.com/pawanrawal/dlint/patch"
 )
 
 var (
