@@ -14,12 +14,12 @@ We all know well linted code makes for good code and keeps everyone happy. lint 
 
 Once you have the webhook setup and the access token with you, you can start lint like
 
-`go build && ./dlint -token=token -repo=https://api.github.com/repos/pawanrawal/ideal-octo-fortnight -ignore=lintignore`
+`go build && ./lint -token=token -repo=https://api.github.com/repos/pawanrawal/ideal-octo-fortnight -ignore=lintignore`
 
-`./dlint --help` tells us what flags are available
+`./lint --help` tells us what flags are available
 
 ```
-Usage of ./dlint:
+Usage of ./lint:
   -debug
            In debug mode comments are not published to Github
   -ignore string
@@ -32,7 +32,7 @@ Usage of ./dlint:
            Access token for the Github API
 ```
 
-You can supply dlint with an ignore file with the `-ignore` file. A sample ignore file is like
+You can supply lint with an ignore file with the `-ignore` file. A sample ignore file is like
 
 ```
 // Do not lint files in the vendor folder. The trailing / is important when you want to ignore all files in a folder.
