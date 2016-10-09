@@ -8,27 +8,29 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dgraph-io/lint/patch"
 	"github.com/golang/lint"
 )
 
 var (
-	port        = flag.String("port", ":4567", "Port to run the web server on.")
-	accessToken = flag.String("token", "", "Access token for the Github API")
-	basePath    = flag.String("repo", "", "basePath for repo")
-	ignoreFile  = flag.String("ignore", "", "Name of file which contains information about files/folders which should be ignored")
-	debugMode   = flag.Bool("debug", false, "In debug mode comments are not published to Github")
+	port         = flag.String("port", ":4567", "Port to run the web server on.")
+	basePath     = flag.String("repo", "", "basePath for repo")
+	ignoreFile   = flag.String("ignore", "", "Name of file which contains information about files/folders which should be ignored")
+	clientId     = flag.String("cid", "", "Client id used for Github application")
+	clientSecret = flag.String("csecret", "", "Client secret used for Github application")
+	serverAddr   = flag.String("ip", "", "Public IP address with port of the server")
+	debugMode    = flag.Bool("debug", false, "In debug mode comments are not published to Github")
+	accessToken  = ""
 )
-
-func url(path string) string {
-	return ""
-}
 
 type ghFileInfo struct {
 	Name   string `json:"filename"`
@@ -94,7 +96,7 @@ func publishComments(prNum int, pc chan LintError) {
 			log.Fatal(err)
 		}
 		req, err := http.NewRequest("POST", url, bytes.NewBuffer(b))
-		req.Header.Set("Authorization", fmt.Sprintf("token %v", *accessToken))
+		req.Header.Set("Authorization", fmt.Sprintf("token %v", accessToken))
 		req.Header.Set("Content-Type", "application/json")
 		client := &http.Client{}
 		resp, err := client.Do(req)
@@ -152,6 +154,9 @@ func findErrors(file ghFileInfo, sha string, pc chan LintError, wg *sync.WaitGro
 
 // handler for incoming webhook that is triggered when a PR is created/modified.
 func payloadHandler(w http.ResponseWriter, r *http.Request) {
+	if accessToken == "" {
+		return
+	}
 	// parse pull request number.
 	decoder := json.NewDecoder(r.Body)
 
@@ -235,12 +240,151 @@ func parseFilesToIgnore() {
 	}
 }
 
+func randString(length int) string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	result := make([]byte, length)
+	for i := 0; i < length; i++ {
+		result[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(result)
+}
+
+var state string
+
+func requestAccessHandler(w http.ResponseWriter, r *http.Request) {
+	if accessToken != "" {
+		w.Write([]byte("Access already granted."))
+		return
+	}
+	req, err := http.NewRequest("GET", "https://github.com/login/oauth/authorize", nil)
+	if err != nil {
+		fmt.Println(err)
+		w.Write([]byte("Something went wrong."))
+		return
+	}
+	q := req.URL.Query()
+	q.Add("client_id", *clientId)
+	q.Add("scope", "repo write:repo_hook")
+	state = randString(15)
+	q.Add("state", state)
+	req.URL.RawQuery = q.Encode()
+	fmt.Println(req.URL.String())
+	http.Redirect(w, r, req.URL.String(), http.StatusFound)
+}
+
+type OAuthRes struct {
+	AccessToken string `json:"access_token"`
+}
+
+type whBody struct {
+	Name   string   `json:"name"`
+	Config config   `json:"config"`
+	Events []string `json:"events"`
+	Active bool     `json:"active"`
+}
+
+type config struct {
+	Url         string `json:"url"`
+	ContentType string `json:"content_type"`
+}
+
+func createWebhook() error {
+	body := whBody{
+		Name:   "web",
+		Events: []string{"pull_request"},
+		Active: true,
+		Config: config{
+			Url:         fmt.Sprintf("%v/payload", *serverAddr),
+			ContentType: "json",
+		},
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(buf))
+	req, err := http.NewRequest("POST", fmt.Sprintf("%v/hooks", *basePath), bytes.NewBuffer(buf))
+	fmt.Println(req.URL.String())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("token %v", accessToken))
+	c := http.Client{}
+	resp, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	fmt.Println(resp.StatusCode)
+	if resp.StatusCode != 201 {
+		return fmt.Errorf("Unexpected error code")
+	}
+	return nil
+}
+
+func callbackHandler(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	s := r.URL.Query().Get("state")
+	if code == "" || s != state {
+		w.Write([]byte("Process couldn't be completed, please try again."))
+		return
+	}
+
+	form := url.Values{}
+	form.Add("client_id", *clientId)
+	form.Add("client_secret", *clientSecret)
+	form.Add("code", code)
+	form.Add("state", state)
+	req, err := http.NewRequest("POST", "https://github.com/login/oauth/access_token", strings.NewReader(form.Encode()))
+	if err != nil {
+		fmt.Println(err)
+		w.Write([]byte("Something went wrong."))
+		return
+	}
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Add("Accept", "application/json")
+	c := http.Client{}
+	resp, err := c.Do(req)
+	if err != nil {
+		w.Write([]byte("Process couldn't be completed, please try again."))
+		return
+	}
+	// TODO - Check scopes granted and respond with error if they don't match
+	// requested scopes.
+	var or OAuthRes
+	err = json.NewDecoder(resp.Body).Decode(&or)
+	if err != nil {
+		w.Write([]byte("Process couldn't be completed, please try again."))
+		return
+	}
+	if or.AccessToken == "" {
+		w.Write([]byte("Process couldn't be completed, please try again."))
+		return
+	}
+	accessToken = or.AccessToken
+	fmt.Println(accessToken)
+	// Create webhook which would be informed about pull request changes.
+	if err = createWebhook(); err != nil {
+		fmt.Println(err)
+		w.Write([]byte("Process couldn't be completed, please try again."))
+		return
+	}
+	w.Write([]byte("Access granted successfully"))
+}
+
 func main() {
+	rand.Seed(time.Now().UnixNano())
 	flag.Parse()
 	if *basePath == "" {
 		log.Fatal("Please enter a valid base path for a Github repo.")
 	}
+	if *clientId == "" || *clientSecret == "" {
+		log.Fatal("Github app credentials missing")
+	}
+	if *serverAddr == "" {
+		log.Fatal("Server IP address missing")
+	}
+
 	parseFilesToIgnore()
+	http.HandleFunc("/", requestAccessHandler)
+	http.HandleFunc("/callback", callbackHandler)
 	http.HandleFunc("/payload", payloadHandler)
 	fmt.Println("HTTP server listening on port 4567")
 	err := http.ListenAndServe(*port, nil)
