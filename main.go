@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/boltdb/bolt"
 	"github.com/dgraph-io/lint/patch"
 	"github.com/golang/lint"
 )
@@ -268,7 +269,6 @@ func requestAccessHandler(w http.ResponseWriter, r *http.Request) {
 	state = randString(15)
 	q.Add("state", state)
 	req.URL.RawQuery = q.Encode()
-	fmt.Println(req.URL.String())
 	http.Redirect(w, r, req.URL.String(), http.StatusFound)
 }
 
@@ -302,9 +302,7 @@ func createWebhook() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(string(buf))
 	req, err := http.NewRequest("POST", fmt.Sprintf("%v/hooks", *basePath), bytes.NewBuffer(buf))
-	fmt.Println(req.URL.String())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("token %v", accessToken))
 	c := http.Client{}
@@ -312,11 +310,23 @@ func createWebhook() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(resp.StatusCode)
 	if resp.StatusCode != 201 {
 		return fmt.Errorf("Unexpected error code")
 	}
 	return nil
+}
+
+func getKey(path string) string {
+	// Path would be typically like - https://api.github.com/repos/pawanrawal/ideal-octo-fortnight
+	lastIdx := strings.LastIndex(path, "/")
+	if lastIdx == -1 {
+		log.Fatal("Incorrect basepath format")
+	}
+	secondLastIdx := strings.LastIndex(path[:lastIdx], "/")
+	if secondLastIdx == -1 {
+		log.Fatal("Incorrect basepath format")
+	}
+	return path[secondLastIdx+1:]
 }
 
 func callbackHandler(w http.ResponseWriter, r *http.Request) {
@@ -359,19 +369,55 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	accessToken = or.AccessToken
-	fmt.Println(accessToken)
+	err = db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("AccessTokens"))
+		key := getKey(*basePath)
+		err := b.Put([]byte(key), []byte(accessToken))
+		return err
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("Granted access token", accessToken)
 	// Create webhook which would be informed about pull request changes.
 	if err = createWebhook(); err != nil {
-		fmt.Println(err)
 		w.Write([]byte("Process couldn't be completed, please try again."))
 		return
 	}
 	w.Write([]byte("Access granted successfully"))
 }
 
-func main() {
+var db *bolt.DB
+
+func init() {
 	rand.Seed(time.Now().UnixNano())
 	flag.Parse()
+	// Open bolt db and create a bucket to persist the access token across crashes.
+	var err error
+	db, err = bolt.Open("lint.db", 0600, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte("AccessTokens"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		return nil
+	})
+
+	db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("AccessTokens"))
+		key := getKey(*basePath)
+		v := b.Get([]byte(key))
+		if v != nil {
+			accessToken = string(v)
+		}
+		return nil
+	})
+}
+func main() {
 	if *basePath == "" {
 		log.Fatal("Please enter a valid base path for a Github repo.")
 	}
@@ -386,7 +432,7 @@ func main() {
 	http.HandleFunc("/", requestAccessHandler)
 	http.HandleFunc("/callback", callbackHandler)
 	http.HandleFunc("/payload", payloadHandler)
-	fmt.Println("HTTP server listening on port 4567")
+	fmt.Println("HTTP server listening on port ", *port)
 	err := http.ListenAndServe(*port, nil)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
