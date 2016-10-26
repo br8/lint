@@ -1,4 +1,4 @@
-vendor
-ignore.go
-folder/subfolder
-folder/ignore.go
+*.pb.go
+vendor/
+task/
+posting/types/
